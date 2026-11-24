@@ -1,0 +1,22 @@
+import {initializeApp} from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-app.js';
+import {initializeAppCheck,ReCaptchaV3Provider,ReCaptchaEnterpriseProvider} from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-app-check.js';
+import {getAI,getGenerativeModel,GoogleAIBackend,InferenceMode,InferenceSource} from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-ai.js';
+import {runtime} from './runtime.mjs';
+import {installCloudChart} from './cloud-chart.mjs';
+const $=id=>document.getElementById(id),localOrigin=runtime.reviewOrigin;let model, payloadVersion=0, stale=false;
+if(runtime.mode==='hosted')$('cloud-setup').hidden=true;
+function payloadChanged(){payloadVersion++;$('status').textContent='Evidence changed. No explanation for the current text yet.';$('response').textContent='No explanation yet.';}
+$('payload').addEventListener('input',payloadChanged);
+window.addEventListener('message',event=>{if(event.origin!==localOrigin||event.source!==window.opener)return;if(event.data?.type==='ledger-cloud-invalidated'){stale=true;payloadVersion++;$('status').textContent='The review changed. This snapshot is out of date; prepare a new one before sending.';$('response').textContent='No current explanation.';return;}if(event.data?.type!=='ledger-cloud-evidence')return;const p=event.data.payload;if(!p||typeof p.status!=='string'||typeof p.evidence!=='string')return;stale=false;$('payload').value=`Check result: ${p.status}\nEvidence: ${p.evidence}\nNote: The observations were confirmed by a person and may not reflect the underlying data.`;payloadChanged();});
+if(window.opener)window.opener.postMessage({type:'ledger-cloud-ready'},localOrigin);
+function getModel(){
+  if(model)return model;
+  let config;try{config=runtime.mode==='hosted'?runtime.firebaseConfig:JSON.parse($('config').value);if(!config?.apiKey||!config?.projectId||!config?.appId)throw new Error();}catch{throw new Error('Firebase configuration is missing or invalid.');}
+  let provider;if(runtime.mode==='hosted'){if(!runtime.recaptchaSiteKey)throw new Error('Missing reCAPTCHA site key');provider=new ReCaptchaEnterpriseProvider(runtime.recaptchaSiteKey);}else{if(location.origin!==runtime.cloudOrigin||new URL(location.href).hostname!=='127.0.0.1')throw new Error('Debug mode is restricted to localhost');self.FIREBASE_APPCHECK_DEBUG_TOKEN=true;provider=new ReCaptchaV3Provider('localhost-debug-placeholder');}
+  const app=initializeApp(config);initializeAppCheck(app,{provider,isTokenAutoRefreshEnabled:runtime.mode==='hosted'});model=getGenerativeModel(getAI(app,{backend:new GoogleAIBackend()}),{mode:InferenceMode.ONLY_IN_CLOUD});$('config').value='';return model;
+}
+installCloudChart({getModel,inCloud:InferenceSource.IN_CLOUD,elements:{file:$('cloud-chart-file'),sample:$('cloud-chart-sample'),preview:$('cloud-chart-preview'),send:$('cloud-chart-send'),status:$('cloud-chart-status'),result:$('cloud-chart-result')}});
+$('generate').addEventListener('click',async()=>{if(stale){$('status').textContent='The review changed. Prepare a new snapshot before sending.';return;}const input=$('payload').value.trim();if(!input){$('status').textContent='Add or prepare evidence before sending.';return;}let activeModel;try{activeModel=getModel();}catch{$('status').textContent='Firebase setup failed. Check configuration and App Check.';return;}
+  const requestVersion=payloadVersion;$('generate').disabled=true;$('status').textContent='Sending the reviewed text to Google…';$('response').textContent='Waiting for response.';
+  try{const response=(await activeModel.generateContent('Explain the following structured chart-check evidence briefly for a report author. Do not infer unprovided data, and state that observations need human verification. Evidence:\n'+input)).response;if(payloadVersion!==requestVersion){$('status').textContent='Evidence changed during the request. The earlier response was not shown.';return;}$('response').textContent=response.text();$('status').textContent=response.inferenceSource===InferenceSource.IN_CLOUD?'Cloud response received. Review it before use.':'Response received; the SDK did not confirm cloud source.';}catch(e){if(payloadVersion!==requestVersion){$('status').textContent='Evidence changed during the request. No explanation for the current text.';return;}$('status').textContent=`Cloud request failed${e?.code?` (${e.code})`:''}. Check App Check registration, quota and configuration.`;$('response').textContent='No explanation was generated.';}finally{$('generate').disabled=false;}
+});

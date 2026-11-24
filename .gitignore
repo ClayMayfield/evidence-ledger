@@ -1,0 +1,11 @@
+node_modules/
+.staging-*/
+*.private.json
+.firebase/
+.firebaserc
+.env
+.env.*
+*.pem
+*.key
+firebase-debug.log
+firebase-debug.*.log

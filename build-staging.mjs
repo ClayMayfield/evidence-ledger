@@ -1,0 +1,46 @@
+// Prepares two isolated static Hosting targets. It does not create cloud
+// resources, deploy, validate quotas, or prove privacy/security properties.
+import {readFile,writeFile,mkdir,mkdtemp,copyFile,realpath} from 'node:fs/promises';
+import {dirname,join,resolve,relative,isAbsolute,sep,basename} from 'node:path';
+import {fileURLToPath} from 'node:url';
+const root=dirname(fileURLToPath(import.meta.url));
+const configPath=process.argv[2];
+if(!configPath)throw new Error('Pass the path to a private staging JSON configuration. See release.example.json.');
+const rootReal=await realpath(root),configReal=await realpath(resolve(configPath));
+const rel=relative(rootReal,configReal),inside=rel!==''&&!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith(`..${sep}`);
+const isExample=configReal===join(rootReal,'release.example.json');
+if(inside&&!isExample&&!basename(configReal).endsWith('.private.json'))throw new Error('Configuration inside this project must use a .private.json suffix or live outside the project directory.');
+const c=JSON.parse(await readFile(configReal,'utf8'));
+const syntheticExample={reviewOrigin:'https://review.example.invalid',cloudOrigin:'https://cloud.example.invalid',confirmedNonProduction:true,recaptchaSiteKey:'SYNTHETIC-NOT-A-KEY',firebaseConfig:{apiKey:'SYNTHETIC-NOT-A-KEY',projectId:'synthetic-project',appId:'synthetic-app'}};
+if(isExample&&JSON.stringify(c)!==JSON.stringify(syntheticExample))throw new Error('The checked-in example must contain only its synthetic placeholder values.');
+function origin(value){const u=new URL(value);if(u.protocol!=='https:'||u.username||u.password||u.pathname!=='/'||u.search||u.hash||u.hostname==='localhost'||u.hostname==='127.0.0.1')throw new Error('Staging origins must be distinct HTTPS origins without a path.');return u.origin;}
+const reviewOrigin=origin(c.reviewOrigin),cloudOrigin=origin(c.cloudOrigin);
+if(reviewOrigin===cloudOrigin)throw new Error('Review and cloud origins must be different.');
+if(c.confirmedNonProduction!==true)throw new Error('Use an explicitly confirmed non-production demonstration project.');
+if(typeof c.recaptchaSiteKey!=='string'||!c.recaptchaSiteKey.trim())throw new Error('A reCAPTCHA Enterprise site key is required.');
+const allowed=['apiKey','authDomain','projectId','storageBucket','messagingSenderId','appId','measurementId'];
+const f=c.firebaseConfig;if(!f||typeof f!=='object'||Array.isArray(f)||!['apiKey','projectId','appId'].every(k=>typeof f[k]==='string'&&f[k].trim()))throw new Error('Firebase web config must contain apiKey, projectId and appId.');
+if(Object.keys(f).some(k=>!allowed.includes(k))||Object.values(f).some(v=>typeof v!=='string'))throw new Error('Firebase web config contains unrecognized fields.');
+const safeConfig=Object.fromEntries(Object.entries(f).filter(([k])=>allowed.includes(k)));
+const out=await mkdtemp(join(root,'.staging-')),review=join(out,'review'),cloud=join(out,'cloud');
+await mkdir(review);await mkdir(cloud);await mkdir(join(review,'vendor'));await mkdir(join(review,'LICENSES'));
+for(const file of ['index.html','style.css','app.mjs','csv.mjs','suggestions.mjs','claim-draft.mjs'])await copyFile(join(root,file),join(review,file));
+const core=await readFile(join(root,'core.mjs'),'utf8');const old="'./node_modules/decimal.js/decimal.mjs'";if(!core.includes(old))throw new Error('Decimal import was not found; staging is incomplete.');
+await writeFile(join(review,'core.mjs'),core.replace(old,"'./vendor/decimal.mjs'"));
+await copyFile(join(root,'node_modules/decimal.js/decimal.mjs'),join(review,'vendor/decimal.mjs'));
+await copyFile(join(root,'node_modules/papaparse/papaparse.min.js'),join(review,'vendor/papaparse.min.js'));
+for(const file of ['PapaParse-MIT.txt','decimal.js-MIT.txt'])await copyFile(join(root,'LICENSES',file),join(review,'LICENSES',file));
+await copyFile(join(root,'THIRD_PARTY_NOTICES.md'),join(review,'THIRD_PARTY_NOTICES.md'));
+await copyFile(join(root,'cloud.html'),join(cloud,'ledger-cloud'));
+await copyFile(join(root,'cloud-hosted.mjs'),join(cloud,'cloud.mjs'));
+await copyFile(join(root,'cloud-chart.mjs'),join(cloud,'cloud-chart.mjs'));
+await copyFile(join(root,'style.css'),join(cloud,'ledger-style.css'));
+const mod=o=>`export const runtime=Object.freeze(${JSON.stringify(o)});\n`;
+await writeFile(join(review,'runtime.mjs'),mod({mode:'hosted',reviewOrigin,cloudOrigin}));
+await writeFile(join(cloud,'runtime.mjs'),mod({mode:'hosted',reviewOrigin,cloudOrigin,firebaseConfig:safeConfig,recaptchaSiteKey:c.recaptchaSiteKey}));
+const reviewCsp="default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self'; img-src 'self' data: blob:; connect-src data:; object-src 'none'; base-uri 'none'; form-action 'none'";
+const cloudCsp="default-src 'self'; script-src 'self' https://www.gstatic.com https://www.google.com/recaptcha/; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://www.gstatic.com; frame-src https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/; connect-src https://firebasevertexai.googleapis.com https://firebaseappcheck.googleapis.com https://content-firebaseappcheck.googleapis.com https://www.google.com/recaptcha/; object-src 'none'; base-uri 'none'; form-action 'none'";
+const target=(name,csp)=>({target:name,public:name,ignore:['firebase.json','**/.*'],headers:[{source:'**',headers:[{key:'Content-Security-Policy',value:csp},{key:'X-Content-Type-Options',value:'nosniff'}]},{source:'**/*.mjs',headers:[{key:'Content-Type',value:'application/javascript; charset=utf-8'}]},...(name==='cloud'?[{source:'/ledger-cloud',headers:[{key:'Content-Type',value:'text/html; charset=utf-8'}]}]:[])]});
+await writeFile(join(out,'firebase.json'),JSON.stringify({hosting:[target('review',reviewCsp),target('cloud',cloudCsp)]},null,2));
+await writeFile(join(out,'README.txt'),'UNVERIFIED STAGING ONLY. Do not deploy before App Check, configuration, consent and privacy checks are complete. Contains a public Firebase web config in cloud/runtime.mjs. Do not commit this directory.\n');
+console.log(`Staging prepared at ${out}. No deployment was performed.`);

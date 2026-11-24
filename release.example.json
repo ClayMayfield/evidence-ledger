@@ -1,0 +1,7 @@
+{
+  "reviewOrigin": "https://review.example.invalid",
+  "cloudOrigin": "https://cloud.example.invalid",
+  "confirmedNonProduction": true,
+  "recaptchaSiteKey": "SYNTHETIC-NOT-A-KEY",
+  "firebaseConfig": {"apiKey":"SYNTHETIC-NOT-A-KEY","projectId":"synthetic-project","appId":"synthetic-app"}
+}
