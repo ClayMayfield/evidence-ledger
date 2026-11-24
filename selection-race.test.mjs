@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import {parseClaimDraft,assertClaimEvidenceInStatement} from './claim-draft.mjs';
+import {evaluateClaim} from './core.mjs';
 
 const source=(await readFile(new URL('./app.mjs',import.meta.url),'utf8'))
   .replace(/^import .* from .*;\s*$/gm,'')
@@ -42,7 +43,7 @@ async function harness(sdkFixture=null){
   const context={document,window,Image,File,URL,queueMicrotask,Promise,
     fakeImport:()=>sdkFixture?Promise.resolve(sdkFixture):Promise.reject(new Error('SDK not needed')),
     runtime:{reviewOrigin:'http://127.0.0.1:43127',cloudOrigin:'http://127.0.0.1:43123'},
-    evaluateClaim(){},parseCsv(){},compareSources(){},parseSuggestions(){},parseClaimDraft,assertClaimEvidenceInStatement,console};
+    evaluateClaim,parseCsv(){},compareSources(){},parseSuggestions(){},parseClaimDraft,assertClaimEvidenceInStatement,console};
   vm.runInNewContext(source,context,{filename:'app.mjs'});
   await flush(); // settle deliberately unavailable remote SDK imports
   return {elements,pendingBlobs,imageJobs,urls,File,window};
@@ -85,6 +86,23 @@ test('a sample still loads when no later selection or edit interrupts it',async(
   assert.equal(h.urls.get(get('chart-preview').src).name,'synthetic-sample.png');
   assert.equal(get('claim-text').value,'Box A weighs 8 grams.');
   assert.equal(get('sample-btn').disabled,false);
+});
+
+test('blank observations cannot be confirmed but partial entries remain uncertain',async()=>{
+  const h=await harness(),get=id=>h.elements.get(id);
+  const inputs=get('observations').querySelectorAll('input');
+  inputs[0].value='  ';inputs[1].value=' ';inputs[2].value='';
+  get('confirm-btn').dispatch('click');
+  assert.equal(get('check-btn').disabled,true);
+  assert.match(get('confirm-status').textContent,/Enter an observation before confirming/);
+
+  inputs[0].value='Box A';inputs[0].dispatch('input');
+  get('confirm-btn').dispatch('click');
+  assert.equal(get('check-btn').disabled,false);
+  const fields=get('claim-fields').querySelectorAll('input');
+  fields[0].value='Box A';fields[1].value='8';fields[2].value='g';
+  get('check-btn').dispatch('click');
+  assert.equal(get('result').children[0].textContent,'UNCERTAIN');
 });
 
 test('observation controls identify their current row after removal',async()=>{
